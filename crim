@@ -1,4 +1,5 @@
---// UniScript BETA Loader (Full Optimized Version with Low-Lag Infinite Sprint)
+-- UniScript BETA loader (robust): tries Rayfield urls -> local file -> built-in Rayfield-style UI
+-- Paste this as your loader.lua
 
 -- Services
 local Players = game:GetService("Players")
@@ -6,6 +7,14 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
+
+-- safe call helper
+local function safeCall(f, name)
+    local ok, err = pcall(f)
+    if not ok then
+        warn(("UniScript error [%s]: %s"):format(name or "unknown", tostring(err)))
+    end
+end
 
 -- Settings
 local Settings = {
@@ -15,9 +24,8 @@ local Settings = {
     WallbangEnabled = false,
     NoClipEnabled = false,
     AimlockFOV = 150,
-    AimlockActive = false,
-    PlayerFOV = Camera.FieldOfView,
     AimlockPrediction = 0.18,
+    PlayerFOV = Camera.FieldOfView,
     MeleeAuraEnabled = false,
     MeleeReach = 10,
 }
@@ -25,261 +33,231 @@ local Settings = {
 -- Globals
 local ESPs = {}
 local connections = {}
-
--- =========================
--- SAFE RAYFIELD LOADING
--- =========================
-local success, Rayfield = pcall(function()
-    return loadstring(game:HttpGet('https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua'))()
-end)
-
-if not success or not Rayfield then
-    warn("Rayfield failed to load. UI will not appear.")
-    return
-end
-
-local Window = Rayfield:CreateWindow({
-    Name = "UniScript BETA",
-    LoadingTitle = "UniScript is loading...",
-    LoadingSubtitle = "by Ryan",
-    Theme = "Dark",
-    ConfigurationSaving = {Enabled=true, FolderName="CriminalityScripts", FileName="Settings"},
-    KeySystem = false
-})
-
--- Tabs
-local CombatTab = Window:CreateTab("Combat", 4483362458)
-local MiscTab = Window:CreateTab("Misc", 4483362458)
-local ExtrasTab = Window:CreateTab("Extras", 4483362458)
-
--- =========================
--- FPS BAR
--- =========================
-local fpsLabel = Instance.new("TextLabel")
-fpsLabel.Size = UDim2.new(0,100,0,25)
-fpsLabel.Position = UDim2.new(0,10,0,10)
-fpsLabel.BackgroundTransparency = 0.5
-fpsLabel.BackgroundColor3 = Color3.fromRGB(0,0,0)
-fpsLabel.TextColor3 = Color3.fromRGB(0,255,0)
-fpsLabel.TextScaled = true
-fpsLabel.Font = Enum.Font.SourceSansBold
-fpsLabel.ResetOnSpawn = false
-fpsLabel.Parent = LocalPlayer:WaitForChild("PlayerGui")
-
-local lastTime = tick()
-RunService.RenderStepped:Connect(function()
-    local currentTime = tick()
-    local fps = 1 / (currentTime - lastTime)
-    lastTime = currentTime
-    fpsLabel.Text = "FPS: "..math.floor(fps)
-end)
-
--- =========================
--- ESP
--- =========================
-local function createESP(player)
-    if ESPs[player] then return end
-    local character = player.Character
-    if not character or not character:FindFirstChild("HumanoidRootPart") then return end
-
-    local billboard = Instance.new("BillboardGui")
-    billboard.Name = "ESP"
-    billboard.Size = UDim2.new(0,120,0,50)
-    billboard.Adornee = character.HumanoidRootPart
-    billboard.AlwaysOnTop = true
-    billboard.StudsOffset = Vector3.new(0,2,0)
-    billboard.Parent = game:GetService("CoreGui")
-
-    local nameLabel = Instance.new("TextLabel")
-    nameLabel.Size = UDim2.new(1,0,0.4,0)
-    nameLabel.BackgroundTransparency = 1
-    nameLabel.TextColor3 = Color3.new(0,1,0)
-    nameLabel.TextStrokeTransparency = 0
-    nameLabel.Font = Enum.Font.SourceSansBold
-    nameLabel.TextScaled = true
-    nameLabel.Text = player.Name
-    nameLabel.Parent = billboard
-
-    local healthBar = Instance.new("Frame")
-    healthBar.Size = UDim2.new(1,0,0.2,0)
-    healthBar.Position = UDim2.new(0,0,0.4,0)
-    healthBar.BackgroundColor3 = Color3.fromRGB(0,255,0)
-    healthBar.BorderSizePixel = 0
-    healthBar.Parent = billboard
-
-    local distLabel = Instance.new("TextLabel")
-    distLabel.Size = UDim2.new(1,0,0.4,0)
-    distLabel.Position = UDim2.new(0,0,0.6,0)
-    distLabel.BackgroundTransparency = 1
-    distLabel.TextColor3 = Color3.new(1,1,0)
-    distLabel.TextStrokeTransparency = 0
-    distLabel.Font = Enum.Font.SourceSansBold
-    distLabel.TextScaled = true
-    distLabel.Text = ""
-    distLabel.Parent = billboard
-
-    ESPs[player] = {Billboard=billboard, Name=nameLabel, HealthBar=healthBar, Distance=distLabel}
-end
-
-local function removeESP(player)
-    if ESPs[player] then
-        ESPs[player].Billboard:Destroy()
-        ESPs[player] = nil
-    end
-end
-
-table.insert(connections, RunService.RenderStepped:Connect(function()
-    for _,player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-            if Settings.ESPEnabled then
-                if not ESPs[player] then createESP(player) end
-                local hum = player.Character:FindFirstChild("Humanoid")
-                if hum then ESPs[player].HealthBar.Size = UDim2.new(hum.Health / hum.MaxHealth,0,0.2,0) end
-                local distance = (player.Character.HumanoidRootPart.Position - LocalPlayer.Character.HumanoidRootPart.Position).Magnitude
-                if ESPs[player] then ESPs[player].Distance.Text = string.format("%.0f studs", distance) end
-            else
-                removeESP(player)
-            end
-        else
-            removeESP(player)
-        end
-    end
-end))
-
--- =========================
--- INFINITE SPRINT (Optimized getgc method)
--- =========================
 local sprintTables = {}
 local SprintEnabled = false
 
-local function getTargetTables()
-    local found = {}
-    for _, tbl in getgc(true) do
-        if typeof(tbl) == "table" and rawget(tbl, "S") then
-            if typeof(rawget(tbl, "S")) == "number" then    
-                table.insert(found, tbl)
-            end
+-- ========= Try multiple Rayfield URLs then local file =========
+local function tryLoadRayfieldFromUrls(urls)
+    for _,url in ipairs(urls) do
+        local ok, lib = pcall(function()
+            return loadstring(game:HttpGet(url))()
+        end)
+        if ok and lib then
+            return lib
         end
     end
-    return found
+    return nil
 end
 
-task.spawn(function()
-    while task.wait(0.1) do
-        if SprintEnabled then
-            for _, tbl in pairs(sprintTables) do
-                rawset(tbl, "S", 100)
-            end
+local knownRayfieldUrls = {
+    "https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua",
+    "https://raw.githubusercontent.com/nerdcollective/Rayfield/main/Source.lua",
+    "https://raw.githubusercontent.com/Rayfield-Dev/Rayfield/main/source.lua"
+}
+
+local Rayfield = nil
+safeCall(function()
+    -- try URLs (pcall inside)
+    Rayfield = tryLoadRayfieldFromUrls(knownRayfieldUrls)
+    if not Rayfield then
+        -- try local readfile fallback
+        if pcall(function() readfile("Rayfield.lua") end) then
+            local ok, lib = pcall(function() return loadstring(readfile("Rayfield.lua"))() end)
+            if ok and lib then Rayfield = lib end
         end
     end
-end)
+end, "Rayfield Overall Load")
 
-LocalPlayer.CharacterAdded:Connect(function()
-    task.wait(1)
-    sprintTables = getTargetTables()
-end)
+-- We'll later create UI either via Rayfield (if available) or internal UI
+local Window, CombatTab, MiscTab, ExtrasTab
 
-sprintTables = getTargetTables()
-
--- Hook up UI toggle
-MiscTab:CreateToggle({
-    Name = "Infinite Sprint",
-    CurrentValue = false,
-    Flag = "InfiniteSprint",
-    Callback = function(v)
-        SprintEnabled = v
-    end
-})
-
--- =========================
--- AIMLOCK CENTERED
--- =========================
-local FOVCircle
-pcall(function()
-    FOVCircle = Drawing.new("Circle")
-    FOVCircle.Visible = false
-    FOVCircle.Color = Color3.fromRGB(255,0,0)
-    FOVCircle.Thickness = 2
-    FOVCircle.NumSides = 100
-    FOVCircle.Radius = Settings.AimlockFOV
-    FOVCircle.Filled = false
-end)
-
-local ScreenCenter = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
-
-RunService.RenderStepped:Connect(function()
-    if FOVCircle then
-        FOVCircle.Position = ScreenCenter
-        FOVCircle.Radius = Settings.AimlockFOV
-        FOVCircle.Visible = Settings.AimlockEnabled
-    end
-end)
-
-local function aimAtTarget(target)
-    if target and target:FindFirstChild("Head") and target:FindFirstChild("HumanoidRootPart") then
-        local cam = Camera
-        local head = target.Head
-        local root = target.HumanoidRootPart
-        local predictedPos = head.Position + root.Velocity * Settings.AimlockPrediction
-        local direction = (predictedPos - cam.CFrame.Position).Unit
-        cam.CFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + direction)
-    end
+-- ========== Built-in Rayfield-style UI (fallback) ==========
+local function make(parent, class, props)
+    local obj = Instance.new(class)
+    if props then for k,v in pairs(props) do obj[k] = v end end
+    obj.Parent = parent
+    return obj
 end
 
-local function runAimlock()
-    if not Settings.AimlockActive then return end
-    local closest
-    local shortest = Settings.AimlockFOV
-    for _,player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Head") then
-            local screenPos, onScreen = Camera:WorldToViewportPoint(player.Character.Head.Position)
-            if onScreen then
-                local dist = (Vector2.new(screenPos.X,screenPos.Y)-ScreenCenter).Magnitude
-                if dist < shortest then
-                    shortest = dist
-                    closest = player
-                end
+local function createInternalRayfieldUI()
+    local screenGui = make(game:GetService("CoreGui"), "ScreenGui", {Name = "UniScriptGUI"})
+    local main = make(screenGui, "Frame", {
+        Name = "MainWindow",
+        Size = UDim2.new(0, 540, 0, 360),
+        Position = UDim2.new(0.02,0,0.06,0),
+        BackgroundColor3 = Color3.fromRGB(30,30,35),
+        BorderSizePixel = 0
+    })
+    local title = make(main, "TextLabel", {
+        Size = UDim2.new(1,0,0,40),
+        BackgroundColor3 = Color3.fromRGB(20,20,25),
+        Text = "Criminality Enhancer — UniScript BETA",
+        TextColor3 = Color3.fromRGB(255,255,255),
+        Font = Enum.Font.SourceSansBold,
+        TextSize = 18,
+        TextXAlignment = Enum.TextXAlignment.Left
+    })
+    local subtitle = make(main, "TextLabel", {
+        Size = UDim2.new(1,0,0,20),
+        Position = UDim2.new(0,0,0,40),
+        BackgroundTransparency = 1,
+        Text = "UniScript is loading...  |  by Ryan",
+        TextColor3 = Color3.fromRGB(200,200,200),
+        Font = Enum.Font.SourceSans,
+        TextSize = 14
+    })
+    local tabbar = make(main, "Frame", {Size = UDim2.new(1,0,0,36), Position = UDim2.new(0,0,0,64), BackgroundTransparency = 1})
+    local content = make(main, "Frame", {Size = UDim2.new(1,-20,1,-130), Position = UDim2.new(0,10,0,104), BackgroundTransparency = 1})
+    local function makeTabBtn(name, x)
+        local b = make(tabbar, "TextButton", {
+            Size = UDim2.new(0,170,0,28),
+            Position = UDim2.new(0,x,0,4),
+            BackgroundColor3 = Color3.fromRGB(40,40,45),
+            Text = name,
+            TextColor3 = Color3.fromRGB(220,220,220),
+            Font = Enum.Font.SourceSansSemibold,
+            TextSize = 14,
+            BorderSizePixel = 0
+        })
+        return b
+    end
+    local combatBtn = makeTabBtn("Combat", 6)
+    local miscBtn = makeTabBtn("Misc", 186)
+    local extrasBtn = makeTabBtn("Extras", 366)
+
+    local combatPanel = make(content, "Frame", {Size = UDim2.new(1,0,1,0), BackgroundTransparency = 1, Visible = true})
+    local miscPanel = make(content, "Frame", {Size = UDim2.new(1,0,1,0), BackgroundTransparency = 1, Visible = false})
+    local extrasPanel = make(content, "Frame", {Size = UDim2.new(1,0,1,0), BackgroundTransparency = 1, Visible = false})
+
+    local function show(p)
+        combatPanel.Visible = false; miscPanel.Visible = false; extrasPanel.Visible = false; p.Visible = true
+    end
+    combatBtn.MouseButton1Click:Connect(function() show(combatPanel) end)
+    miscBtn.MouseButton1Click:Connect(function() show(miscPanel) end)
+    extrasBtn.MouseButton1Click:Connect(function() show(extrasPanel) end)
+
+    -- helper row creator
+    local function addRow(parent, y, labelText)
+        local row = make(parent, "Frame", {Size = UDim2.new(1,-10,0,30), Position = UDim2.new(0,5,0,y), BackgroundTransparency = 1})
+        local lbl = make(row, "TextLabel", {Size = UDim2.new(0.5,0,1,0), BackgroundTransparency = 1, Text = labelText, TextColor3 = Color3.fromRGB(200,200,200), Font = Enum.Font.SourceSans, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Left})
+        return row, lbl
+    end
+
+    local function addToggle(parent, y, labelText, callback)
+        local row,_ = addRow(parent,y,labelText)
+        local btn = make(row,"TextButton",{Size=UDim2.new(0,70,0,22),Position=UDim2.new(1,-80,0,4),BackgroundColor3=Color3.fromRGB(60,60,65),Text="OFF",TextColor3=Color3.fromRGB(200,200,200),Font=Enum.Font.SourceSansBold,TextSize=14,BorderSizePixel=0})
+        local val = false
+        btn.MouseButton1Click:Connect(function()
+            val = not val
+            btn.Text = val and "ON" or "OFF"
+            btn.BackgroundColor3 = val and Color3.fromRGB(60,150,60) or Color3.fromRGB(60,60,65)
+            safeCall(function() callback(val) end, "toggle "..labelText)
+        end)
+        return btn
+    end
+
+    local function addSlider(parent, y, labelText, minv, maxv, default, callback)
+        local row,_ = addRow(parent,y,labelText)
+        local valLbl = make(row,"TextLabel",{Size=UDim2.new(0,60,1,0),Position=UDim2.new(1,-150,0,0),BackgroundTransparency=1,Text=tostring(default),TextColor3=Color3.fromRGB(200,200,200),Font=Enum.Font.SourceSans,TextSize=14})
+        local sFrame = make(row,"Frame",{Size=UDim2.new(0,220,0,8),Position=UDim2.new(1,-140,0.5,-4),BackgroundColor3=Color3.fromRGB(50,50,55),BorderSizePixel=0})
+        local fill = make(sFrame,"Frame",{Size=UDim2.new((default-minv)/(maxv-minv),0,1,0),BackgroundColor3=Color3.fromRGB(90,150,255),BorderSizePixel=0})
+        sFrame.InputBegan:Connect(function(inp)
+            if inp.UserInputType==Enum.UserInputType.MouseButton1 then
+                local conn
+                conn = UserInputService.InputChanged:Connect(function(i)
+                    if i.UserInputType==Enum.UserInputType.MouseMovement then
+                        local abs = sFrame.AbsoluteSize.X
+                        local rel = math.clamp((i.Position.X - sFrame.AbsolutePosition.X)/abs,0,1)
+                        local val = minv + rel*(maxv-minv)
+                        val = math.floor(val*100)/100
+                        fill.Size = UDim2.new((val-minv)/(maxv-minv),0,1,0)
+                        valLbl.Text = tostring(val)
+                        safeCall(function() callback(val) end, "slider "..labelText)
+                    end
+                end)
+                local up
+                up = UserInputService.InputEnded:Connect(function(i)
+                    if i.UserInputType==Enum.UserInputType.MouseButton1 then conn:Disconnect(); up:Disconnect() end
+                end)
             end
-        end
+        end)
+        return {frame=sFrame,fill=fill,label=valLbl}
     end
-    if closest then aimAtTarget(closest.Character) end
+
+    -- populate combat
+    local y=0
+    addToggle(combatPanel,y,"Aimlock", function(v) Settings.AimlockEnabled = v end); y=y+36
+    addSlider(combatPanel,y,"Aimlock FOV",50,500,Settings.AimlockFOV,function(v) Settings.AimlockFOV=v end); y=y+36
+    addSlider(combatPanel,y,"Aimlock Prediction",0,1,Settings.AimlockPrediction,function(v) Settings.AimlockPrediction=v end); y=y+36
+    addToggle(combatPanel,y,"Wallbang",function(v) Settings.WallbangEnabled=v end); y=y+36
+    addToggle(combatPanel,y,"Melee Aura",function(v) Settings.MeleeAuraEnabled=v end); y=y+36
+    addSlider(combatPanel,y,"Melee Reach",1,30,Settings.MeleeReach,function(v) Settings.MeleeReach=v end); y=y+36
+
+    -- misc
+    y=0
+    addToggle(miscPanel,y,"NoClip",function(v) Settings.NoClipEnabled=v end); y=y+36
+    addToggle(miscPanel,y,"Infinite Sprint",function(v) SprintEnabled=v end); y=y+36
+    addSlider(miscPanel,y,"Player FOV",70,120,Settings.PlayerFOV,function(v) Settings.PlayerFOV=v Camera.FieldOfView=v end); y=y+36
+    addToggle(miscPanel,y,"ESP",function(v) Settings.ESPEnabled=v end); y=y+36
+
+    -- extras buttons
+    local copyBtn = make(extrasPanel,"TextButton",{Size=UDim2.new(0,220,0,30),Position=UDim2.new(0,10,0,10),Text="Copy Discord",BackgroundColor3=Color3.fromRGB(65,65,70),TextColor3=Color3.fromRGB(230,230,230),Font=Enum.Font.SourceSansBold,TextSize=14,BorderSizePixel=0})
+    copyBtn.MouseButton1Click:Connect(function() pcall(function() setclipboard("https://discord.gg/dJEM47ZtGa") end) end)
+    local unloadBtn = make(extrasPanel,"TextButton",{Size=UDim2.new(0,220,0,30),Position=UDim2.new(0,10,0,50),Text="Unload Script",BackgroundColor3=Color3.fromRGB(165,65,65),TextColor3=Color3.fromRGB(255,255,255),Font=Enum.Font.SourceSansBold,TextSize=14,BorderSizePixel=0})
+    unloadBtn.MouseButton1Click:Connect(function()
+        for _,c in pairs(connections) do pcall(function() c:Disconnect() end) end
+        for p,data in pairs(ESPs) do pcall(function() if data.Billboard then data.Billboard:Destroy() end end) end
+        pcall(function() if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then LocalPlayer.Character.Humanoid.WalkSpeed=16 end end)
+        Camera.FieldOfView = 70
+        pcall(function() screenGui:Destroy() end)
+        print("UniScript unloaded")
+    end)
+
+    -- draggable main
+    local dragging, dragStart, startPos, dragInput
+    main.InputBegan:Connect(function(input)
+        if input.UserInputType==Enum.UserInputType.MouseButton1 then
+            dragging = true; dragStart = input.Position; startPos = main.Position
+            input.Changed:Connect(function() if input.UserInputState==Enum.UserInputState.End then dragging=false end end)
+        end
+    end)
+    main.InputChanged:Connect(function(input) if input.UserInputType==Enum.UserInputType.MouseMovement then dragInput = input end end)
+    table.insert(connections, RunService.RenderStepped:Connect(function()
+        if dragging and dragInput then
+            local delta = dragInput.Position - dragStart
+            main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end))
+
+    return screenGui, {
+        CombatPanel = combatPanel,
+        MiscPanel = miscPanel,
+        ExtrasPanel = extrasPanel
+    }
 end
 
-UserInputService.InputBegan:Connect(function(input,gpe)
-    if gpe then return end
-    if input.UserInputType == Enum.UserInputType.MouseButton2 then Settings.AimlockActive = true end
-end)
+-- If Rayfield was found, create window; otherwise create internal UI
+local internalUI
+if Rayfield then
+    safeCall(function()
+        Window = Rayfield:CreateWindow({
+            Name = "UniScript BETA",
+            LoadingTitle = "UniScript is loading...",
+            LoadingSubtitle = "by Ryan",
+            Theme = "Dark",
+            ConfigurationSaving = {Enabled=true, FolderName="CriminalityScripts", FileName="Settings"},
+            KeySystem = false
+        })
+        CombatTab = Window:CreateTab("Combat", 4483362458)
+        MiscTab = Window:CreateTab("Misc", 4483362458)
+        ExtrasTab = Window:CreateTab("Extras", 4483362458)
+    end, "Rayfield window create")
+else
+    internalUI = createInternalRayfieldUI()
+    -- We don't need to expose Rayfield tabs when using internal UI since it directly writes Settings via callbacks
+end
 
-UserInputService.InputEnded:Connect(function(input,gpe)
-    if gpe then return end
-    if input.UserInputType == Enum.UserInputType.MouseButton2 then Settings.AimlockActive = false end
-end)
-
--- =========================
--- COMBAT TAB UI
--- =========================
-CombatTab:CreateToggle({Name="Aimlock", CurrentValue=false, Flag="Aimlock", Callback=function(v) Settings.AimlockEnabled=v end})
-CombatTab:CreateSlider({Name="Aimlock FOV", Range={50,500}, Increment=5, Suffix="px", CurrentValue=150, Flag="AimlockFOV", Callback=function(v) Settings.AimlockFOV=v if FOVCircle then FOVCircle.Radius=v end end})
-CombatTab:CreateSlider({Name="Aimlock Prediction", Range={0,0.5}, Increment=0.01, Suffix="", CurrentValue=0.18, Flag="AimlockPrediction", Callback=function(v) Settings.AimlockPrediction=v end})
-CombatTab:CreateToggle({Name="Wallbang", CurrentValue=false, Flag="Wallbang", Callback=function(v) Settings.WallbangEnabled=v end})
-CombatTab:CreateToggle({Name="Melee Aura", CurrentValue=false, Flag="MeleeAura", Callback=function(v) Settings.MeleeAuraEnabled=v end})
-CombatTab:CreateSlider({Name="Melee Reach", Range={1,30}, Increment=1, Suffix=" studs", CurrentValue=10, Flag="MeleeReach", Callback=function(v) Settings.MeleeReach=v end})
-
--- =========================
--- MISC TAB UI
--- =========================
-MiscTab:CreateToggle({Name="NoClip", CurrentValue=false, Flag="NoClip", Callback=function(v) Settings.NoClipEnabled=v end})
-MiscTab:CreateSlider({Name="Player FOV", Range={70,120}, Increment=1, Suffix="", CurrentValue=Camera.FieldOfView, Flag="PlayerFOV", Callback=function(v) Settings.PlayerFOV=v Camera.FieldOfView=v end})
-
--- =========================
--- EXTRAS TAB UI
--- =========================
-ExtrasTab:CreateButton({Name="Copy Discord", Callback=function() setclipboard("https://discord.gg/dJEM47ZtGa") end})
-ExtrasTab:CreateButton({Name="Unload Script", Callback=function()
-    for _, conn in pairs(connections) do conn:Disconnect() end
-    for player, _ in pairs(ESPs) do ESPs[player].Billboard:Destroy() end
-    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then LocalPlayer.Character.Humanoid.WalkSpeed=16 end
-    Camera.FieldOfView = 70
-    if Window then Window:Unload() end
-    print("UniScript fully unloaded!")
-end})
+-- ========= FPS display (PlayerGui) =========
+local fpsGui = Instance.new("ScreenGui")
+fpsGui.Name = "US_FPS"
+fpsGui.Parent
